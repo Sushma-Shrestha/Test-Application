@@ -2,15 +2,37 @@ import 'dart:async';
 import 'dart:developer';
 import 'dart:io';
 
-import 'package:bitsdojo_window/bitsdojo_window.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_acrylic/flutter_acrylic.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
+import 'package:launch_at_startup/launch_at_startup.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:system_tray/system_tray.dart';
 import 'package:win32/win32.dart';
 import 'package:window_manager/window_manager.dart';
-import 'package:launch_at_startup/launch_at_startup.dart';
-import 'package:package_info_plus/package_info_plus.dart';
+
+const className = 'FLUTTER_RUNNER_WIN32_WINDOW'; // from win32_window.cpp
+
+const windowTitle = 'Test Application'; // application's window name
+
+class WindowHandle {
+  late final LPWSTR classNamePointer;
+  late final LPWSTR windowTitlePointer;
+
+  void initialize() {
+    classNamePointer = TEXT(className);
+    windowTitlePointer = TEXT(windowTitle);
+  }
+
+  int get handle => FindWindow(classNamePointer, windowTitlePointer);
+
+  void dispose() {
+    free(classNamePointer);
+    free(windowTitlePointer);
+  }
+}
+
+final windowHandle = WindowHandle();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,8 +44,7 @@ void main() async {
   }
   await windowManager.ensureInitialized();
 
-  await Window.setEffect(effect: WindowEffect.acrylic);
-  await windowManager.hide();
+  await Window.setEffect(effect: WindowEffect.solid, color: Colors.white);
 
   PackageInfo packageInfo = await PackageInfo.fromPlatform();
   LaunchAtStartup.instance.setup(
@@ -33,10 +54,13 @@ void main() async {
   await LaunchAtStartup.instance.enable();
 
   var initialSize = const Size(375, 750);
+
   WindowOptions windowOptions = WindowOptions(
     size: initialSize,
+    minimumSize: initialSize,
     center: false,
     skipTaskbar: true,
+    title: windowTitle,
   );
 
   await windowManager.waitUntilReadyToShow(
@@ -47,19 +71,14 @@ void main() async {
           ? await windowManager.setAlignment(Alignment.bottomRight)
           : await windowManager.setAlignment(Alignment.topRight);
       if (Platform.isWindows) {
-        const className =
-            'FLUTTER_RUNNER_WIN32_WINDOW'; // from win32_window.cpp
-        const windowTitle = 'slide_window'; // application's window name
+        windowHandle.initialize();
 
-        final classNamePointer = TEXT(className);
-        final windowTitlePointer = TEXT(windowTitle);
-        final hwnd = FindWindow(classNamePointer, windowTitlePointer);
-
-        final animate = AnimateWindow(hwnd, 1000, AW_SLIDE | AW_HOR_NEGATIVE);
+        final animate = AnimateWindow(
+          windowHandle.handle,
+          1000,
+          AW_SLIDE | AW_HOR_NEGATIVE,
+        );
         log('Animation Successful: ${animate == 1}');
-
-        free(classNamePointer);
-        free(windowTitlePointer);
       } else {
         await windowManager.show();
       }
@@ -69,16 +88,6 @@ void main() async {
   runApp(
     const MyApp(),
   );
-
-  if (Platform.isWindows) {
-    doWhenWindowReady(() {
-      const initialSize = Size(375, 750);
-      appWindow.minSize = initialSize;
-      appWindow.size = initialSize;
-      appWindow.alignment = Alignment.bottomRight;
-      appWindow.show();
-    });
-  }
 }
 
 class MyApp extends StatefulWidget {
@@ -94,8 +103,6 @@ class _MyAppState extends State<MyApp> with WindowListener {
     windowManager.addListener(this);
     initSystemTray();
     super.initState();
-    Window.setEffect(effect: WindowEffect.acrylic);
-    setState(() {});
   }
 
   Future<void> initSystemTray() async {
@@ -113,16 +120,31 @@ class _MyAppState extends State<MyApp> with WindowListener {
     await menu.buildFrom([
       MenuItemLabel(
           label: 'Show',
-          onClicked: (menuItem) async => {
-                (Platform.isWindows)
-                    ? windowManager.restore()
-                    : await windowManager.show()
-              }),
-      MenuItemLabel(
-          label: 'Hide',
-          onClicked: (menuItem) => (Platform.isWindows)
-              ? windowManager.minimize()
-              : windowManager.hide()),
+          onClicked: (menuItem) async {
+            if (Platform.isWindows) {
+              if (await windowManager.isMinimized()) {
+                await windowManager.restore();
+
+                // setState(() {});
+                windowManager.addListener(this);
+
+                return;
+              } else {
+                await windowManager.minimize();
+                // setState(() {});
+                windowManager.addListener(this);
+
+                return;
+              }
+            } else {
+              if (await windowManager.isVisible()) {
+                await windowManager.hide();
+              } else {
+                await windowManager.show();
+                setState(() {});
+              }
+            }
+          }),
       MenuItemLabel(
           label: 'Exit', onClicked: (menuItem) => windowManager.close()),
     ]);
@@ -137,6 +159,7 @@ class _MyAppState extends State<MyApp> with WindowListener {
         if (Platform.isWindows) {
           if (await windowManager.isMinimized()) {
             await windowManager.restore();
+
             // setState(() {});
             windowManager.addListener(this);
 
@@ -166,6 +189,7 @@ class _MyAppState extends State<MyApp> with WindowListener {
 
   @override
   void dispose() {
+    windowHandle.dispose();
     windowManager.removeListener(this);
     super.dispose();
   }
@@ -193,14 +217,9 @@ class _MyAppState extends State<MyApp> with WindowListener {
   void onWindowClose() {}
 
   @override
-  void onWindowFocus() async {
-    (Platform.isWindows) ? windowManager.restore() : await windowManager.show();
-  }
-
-  @override
   void onWindowBlur() async {
     (Platform.isWindows)
-        ? windowManager.minimize()
+        ? await windowManager.minimize()
         : await windowManager.hide();
   }
 
@@ -220,9 +239,7 @@ class _MyAppState extends State<MyApp> with WindowListener {
   }
 
   @override
-  void onWindowRestore() {
-    // do something
-  }
+  void onWindowRestore() {}
 
   @override
   void onWindowResize() {
@@ -266,7 +283,6 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.transparent,
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
