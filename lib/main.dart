@@ -5,9 +5,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_acrylic/flutter_acrylic.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
-import 'package:launch_at_startup/launch_at_startup.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 import 'package:system_tray/system_tray.dart';
+import 'package:tray_test1/debouncer.dart';
 import 'package:win32/win32.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -37,49 +36,43 @@ final windowHandle = WindowHandle();
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Window.initialize();
-  if (Platform.isWindows) {
-    Window.hideWindowControls();
-    Window.hideTitle();
-    Window.makeTitlebarTransparent();
-  }
   await windowManager.ensureInitialized();
 
-  await Window.setEffect(effect: WindowEffect.solid, color: Colors.white);
+  await Window.setEffect(effect: WindowEffect.aero);
 
-  PackageInfo packageInfo = await PackageInfo.fromPlatform();
-  LaunchAtStartup.instance.setup(
-    appName: packageInfo.appName,
-    appPath: Platform.resolvedExecutable,
-  );
-  await LaunchAtStartup.instance.enable();
+  // PackageInfo packageInfo = await PackageInfo.fromPlatform();
+  // LaunchAtStartup.instance.setup(
+  //   appName: packageInfo.appName,
+  //   appPath: Platform.resolvedExecutable,
+  // );
+  // await LaunchAtStartup.instance.enable();
 
-  var initialSize = const Size(375, 750);
+  var initialSize = const Size(375, 500);
 
   WindowOptions windowOptions = WindowOptions(
     size: initialSize,
     minimumSize: initialSize,
+    maximumSize: initialSize,
     center: false,
     skipTaskbar: true,
     title: windowTitle,
   );
 
-  await windowManager.waitUntilReadyToShow(
+  windowManager.waitUntilReadyToShow(
     windowOptions,
     () async {
-      await windowManager.setAsFrameless();
-      Platform.isWindows
-          ? await windowManager.setAlignment(Alignment.bottomRight)
-          : await windowManager.setAlignment(Alignment.topRight);
       if (Platform.isWindows) {
+        await windowManager.setAsFrameless();
+        await windowManager.setAlignment(Alignment.bottomRight);
         windowHandle.initialize();
-
-        final animate = AnimateWindow(
+        AnimateWindow(
           windowHandle.handle,
-          1000,
-          AW_SLIDE | AW_HOR_NEGATIVE,
+          500,
+          AW_ACTIVATE | AW_SLIDE | AW_HOR_NEGATIVE,
         );
-        log('Animation Successful: ${animate == 1}');
+        await windowManager.focus();
       } else {
+        await windowManager.setAlignment(Alignment.topRight);
         await windowManager.show();
       }
     },
@@ -97,19 +90,19 @@ class MyApp extends StatefulWidget {
   State<MyApp> createState() => _MyAppState();
 }
 
-class _MyAppState extends State<MyApp> with WindowListener {
+class _MyAppState extends State<MyApp> {
+  late final SystemTray systemTray;
+
   @override
   void initState() {
-    windowManager.addListener(this);
+    systemTray = SystemTray();
     initSystemTray();
     super.initState();
   }
 
   Future<void> initSystemTray() async {
-    String path =
+    final String path =
         Platform.isWindows ? 'assets/app_icon.ico' : 'assets/app_icon.png';
-
-    final SystemTray systemTray = SystemTray();
 
     await systemTray.initSystemTray(
       title: "system tray",
@@ -121,81 +114,46 @@ class _MyAppState extends State<MyApp> with WindowListener {
       MenuItemLabel(
           label: 'Show',
           onClicked: (menuItem) async {
-            if (Platform.isWindows) {
-              if (await windowManager.isMinimized()) {
-                await windowManager.restore();
-
-                // setState(() {});
-                windowManager.addListener(this);
-
-                return;
-              } else {
-                await windowManager.minimize();
-                // setState(() {});
-                windowManager.addListener(this);
-
-                return;
-              }
+            if (await windowManager.isFocused()) {
+              await windowManager.blur();
             } else {
-              if (await windowManager.isVisible()) {
-                await windowManager.hide();
-              } else {
-                await windowManager.show();
-                setState(() {});
-              }
+              await windowManager.focus();
             }
           }),
       MenuItemLabel(
-          label: 'Exit', onClicked: (menuItem) => windowManager.close()),
+        label: 'Exit',
+        onClicked: (menuItem) => windowManager.close(),
+      ),
     ]);
 
     await systemTray.setContextMenu(menu);
 
     systemTray.registerSystemTrayEventHandler((eventName) async {
-      windowManager.removeListener(this);
-
-      debugPrint("eventName: $eventName");
       if (eventName == kSystemTrayEventClick) {
-        if (Platform.isWindows) {
-          if (await windowManager.isMinimized()) {
-            await windowManager.restore();
-
-            // setState(() {});
-            windowManager.addListener(this);
-
-            return;
-          } else {
-            await windowManager.minimize();
-            // setState(() {});
-            windowManager.addListener(this);
-
-            return;
-          }
+        if (await windowManager.isFocused()) {
+          return await windowManager.blur();
         } else {
-          if (await windowManager.isVisible()) {
-            await windowManager.hide();
-          } else {
-            await windowManager.show();
-            setState(() {});
-          }
+          return await windowManager.focus();
         }
       }
       if (eventName == kSystemTrayEventRightClick) {
-        await systemTray.popUpContextMenu();
+        return await systemTray.popUpContextMenu();
       }
-      windowManager.addListener(this);
     });
   }
 
   @override
-  void dispose() {
+  Future<void> dispose() async {
     windowHandle.dispose();
-    windowManager.removeListener(this);
+    Future.microtask(() async {
+      await systemTray.destroy();
+    });
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final virtualWindowFrameBuilder = VirtualWindowFrameInit();
     return ScreenUtilInit(
         designSize: const Size(375, 750),
         builder: ((context, child) {
@@ -206,59 +164,11 @@ class _MyAppState extends State<MyApp> with WindowListener {
               primarySwatch: Colors.blue,
             ),
             home: const MyHomePage(title: 'Flutter Demo Home Page'),
+            builder: (context, child) {
+              return virtualWindowFrameBuilder(context, child);
+            },
           );
         }));
-  }
-
-  @override
-  Future<void> onWindowEvent(String eventName) async {}
-
-  @override
-  void onWindowClose() {}
-
-  @override
-  void onWindowBlur() async {
-    (Platform.isWindows)
-        ? await windowManager.minimize()
-        : await windowManager.hide();
-  }
-
-  @override
-  void onWindowMaximize() {
-    // do something
-  }
-
-  @override
-  void onWindowUnmaximize() {
-    // do something
-  }
-
-  @override
-  void onWindowMinimize() {
-    // do something
-  }
-
-  @override
-  void onWindowRestore() {}
-
-  @override
-  void onWindowResize() {
-    // do something
-  }
-
-  @override
-  void onWindowMove() {
-    // do something
-  }
-
-  @override
-  void onWindowEnterFullScreen() {
-    // do something
-  }
-
-  @override
-  void onWindowLeaveFullScreen() {
-    // do something
   }
 }
 
@@ -271,8 +181,68 @@ class MyHomePage extends StatefulWidget {
   State<MyHomePage> createState() => _MyHomePageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
+class _MyHomePageState extends State<MyHomePage>
+    with WindowListener, WidgetsBindingObserver {
   int _counter = 0;
+  late final Debouncer _debouncer;
+
+  @override
+  void initState() {
+    windowManager.addListener(this);
+    _debouncer = Debouncer(const Duration(milliseconds: 200));
+    super.initState();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    log(state.name);
+    super.didChangeAppLifecycleState(state);
+  }
+
+  @override
+  Future<void> onWindowBlur() async {
+    if (Platform.isWindows) {
+      AnimateWindow(
+        windowHandle.handle,
+        500,
+        AW_SLIDE | AW_HOR_POSITIVE | AW_HIDE,
+      );
+    } else {
+      await windowManager.hide();
+    }
+    log('Window is hidden');
+  }
+
+  @override
+  void onWindowFocus() {
+    setState(() {});
+    _debouncer.call(() async {
+      if (await windowManager.isFocused()) {
+        if (Platform.isWindows) {
+          AnimateWindow(
+            windowHandle.handle,
+            500,
+            AW_ACTIVATE | AW_SLIDE | AW_HOR_NEGATIVE,
+          );
+        } else {
+          windowManager.show();
+        }
+        log('Window is shown');
+      }
+    });
+  }
+
+  @override
+  void onWindowEvent(String eventName) {
+    log('[WindowManager] onWindowEvent: $eventName');
+  }
+
+  @override
+  void dispose() {
+    windowManager.removeListener(this);
+    _debouncer.reset();
+    super.dispose();
+  }
 
   void _incrementCounter() {
     setState(() {
@@ -282,18 +252,24 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final textStyle = theme.textTheme.bodyMedium?.copyWith(
+      color: Colors.white,
+    );
+    final headlineStyle = theme.textTheme.headlineMedium?.copyWith(
+      color: Colors.white,
+    );
     return Scaffold(
+      backgroundColor: Colors.transparent,
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            const Text(
-              'You have pushed the button this many times:',
-            ),
             Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+              'You have pushed the button this many times:',
+              style: textStyle,
             ),
+            Text('$_counter', style: headlineStyle),
           ],
         ),
       ),
